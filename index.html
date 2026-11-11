@@ -33,6 +33,48 @@ try{imported=JSON.parse(localStorage.getItem('npteImportedV2')||'[]');history=JS
 const bank=()=>{let m=new Map();for(let q of [...builtIn,...imported])m.set(q.id,q);return [...m.values()]};
 function save(){localStorage.setItem('npteImportedV2',JSON.stringify(imported));localStorage.setItem('npteHistoryV2',JSON.stringify(history))}
 let voiceOptions=[],activeAudio=null,activeAudioURL=null,activeRequest=null,playbackToken=0;
+const kokoroPlayer=document.createElement('audio');
+kokoroPlayer.preload='auto';
+kokoroPlayer.playsInline=true;
+kokoroPlayer.setAttribute('playsinline','');
+kokoroPlayer.style.display='none';
+document.body.appendChild(kokoroPlayer);
+let audioSafetyTimer=null;
+function clearAudioSafety(){clearTimeout(audioSafetyTimer);audioSafetyTimer=null}
+function playSavedClip(clipKey,token,finish,localVoice){
+ const audio=kokoroPlayer;
+ activeAudio=audio;
+ clearAudioSafety();
+ audio.pause();
+ audio.onended=null;audio.onerror=null;
+ audio.src='narration/'+encodeURIComponent(clipKey)+'.mp3';
+ let completed=false;
+ const cleanup=()=>{
+  if(completed||token!==playbackToken)return false;
+  completed=true;clearAudioSafety();audio.onended=null;audio.onerror=null;
+  activeAudio=null;return true;
+ };
+ audio.onended=()=>{if(cleanup())finish()};
+ audio.onerror=()=>{if(cleanup()){
+  $('status').textContent='Saved narration could not load. Using iPhone voice.';
+  localVoice();
+ }};
+ const begin=audio.play();
+ if(begin&&typeof begin.catch==='function')begin.catch(()=>{
+  if(cleanup()){
+   $('status').textContent='iPhone paused audio playback. Tap the narrator button to resume.';
+   // Never falsely advance before the explanation was actually heard.
+  }
+ });
+ // Protect against media events that never arrive, without silently skipping narration.
+ audioSafetyTimer=setTimeout(()=>{
+  if(token!==playbackToken||completed)return;
+  if(audio.paused||audio.readyState===0){
+   if(cleanup())$('status').textContent='Audio stalled. Tap Hear question again or Test narrator to resume.';
+  }
+ },14000);
+}
+
 function loadVoices(){
  if(!('speechSynthesis' in window))return;
  const prior=localStorage.getItem('npteVoiceChoice')||'offline';
@@ -52,9 +94,9 @@ function bestVoice(){
  return preferred||voiceOptions.find(v=>v.localService)||voiceOptions[0];
 }
 function cancelNarration(){
- playbackToken++;
+ playbackToken++;clearAudioSafety();
  if(activeRequest){activeRequest.abort();activeRequest=null}
- if(activeAudio){activeAudio.pause();activeAudio.src='';activeAudio=null}
+ if(activeAudio){activeAudio.pause();activeAudio.removeAttribute('src');activeAudio.load();activeAudio=null}
  if(activeAudioURL){URL.revokeObjectURL(activeAudioURL);activeAudioURL=null}
  if('speechSynthesis' in window)speechSynthesis.cancel();
  speaking=false;
@@ -72,10 +114,7 @@ function say(t,done,clipKey){
  };
  if($('voiceChoice').value==='offline'){
   if(!clipKey){localVoice();return}
-  const audio=new Audio('narration/'+encodeURIComponent(clipKey)+'.mp3');activeAudio=audio;
-  audio.onended=()=>{if(token!==playbackToken)return;activeAudio=null;audio.removeAttribute('src');audio.load();finish()};
-  audio.onerror=()=>{if(token!==playbackToken)return;activeAudio=null;$('status').textContent='Saved narration missing for this item. Using iPhone voice.';localVoice()};
-  audio.play().catch(()=>{if(token!==playbackToken)return;localVoice()});
+  playSavedClip(clipKey,token,finish,localVoice);
   return;
  }
  const endpoint=($('aiEndpoint').value||'').trim().replace(/\/+$/,'');
@@ -101,7 +140,7 @@ $('aiEndpoint').onchange=()=>localStorage.setItem('npteAIEndpoint',$('aiEndpoint
 $('voiceChoice').onchange=()=>{localStorage.setItem('npteVoiceChoice',$('voiceChoice').value);$('aiSetup').style.display=$('voiceChoice').value==='ai'?'block':'none';say('Hi! I will be your NPTE practice partner.')};
 $('testVoice').onclick=()=>{localStorage.setItem('npteAIEndpoint',$('aiEndpoint').value.trim());say('Welcome to NPTE Voice Prep. I will read each question, listen for your answer, and explain the clinical reasoning.')};
 if('speechSynthesis'in window){loadVoices();speechSynthesis.onvoiceschanged=loadVoices}
-function haltListening(){voiceEpoch++;clearTimeout(voiceRetry);clearTimeout(listenWatchdog);listenWatchdog=null;voiceRetry=null;voiceBusy=false;const old=recognition;recognition=null;if(old){old.onend=null;old.onerror=null;old.onresult=null;try{old.abort()}catch{}}}
+function haltListening(){handoffPending=false;voiceEpoch++;clearTimeout(voiceRetry);clearTimeout(listenWatchdog);listenWatchdog=null;voiceRetry=null;voiceBusy=false;const old=recognition;recognition=null;if(old){old.onend=null;old.onerror=null;old.onresult=null;try{old.abort()}catch{}}}
 function stop(){haltListening();cancelNarration()}
 function current(){return exam[pos]}
 function refresh(){let seen=new Set(history.map(x=>x.id));$('count').textContent=`${bank().length} questions available · ${[...seen].filter(id=>bank().some(q=>q.id===id)).length} unique questions attempted`;renderReport();$('availableNum').textContent=bank().length;$('attemptedNum').textContent=[...seen].filter(id=>bank().some(q=>q.id===id)).length}
@@ -110,7 +149,7 @@ function present(){haltListening();let q=current();if(!q){$('status').textConten
 function readQuestion(){let q=current();if(!q||answered)return;haltListening();$('status').textContent='Reading question aloud…';const epoch=voiceEpoch; say(`Question ${pos+1}. ${q.question}. ${q.choices.map((x,i)=>`Choice ${letters[i]}. ${x}.`).join(' ')}.`,()=>{if(epoch===voiceEpoch&&!answered&&current()===q){if(voiceEnabled&&!voiceBlocked){$('status').textContent='Preparing microphone…';setTimeout(()=>{if(epoch===voiceEpoch&&!answered&&current()===q&&voiceEnabled&&!voiceBlocked)startListening()},1600)}else $('status').textContent='Tap Answer by voice once to enable hands-free listening.'}},q.id+'_question')}
 function answer(i){
  if(answered||!current())return;
- // Speech recognition must release the iPhone audio session before MP3 playback.
+ // Recognition has already been released by the speech-answer handoff.
  const wasListening=!!recognition||voiceBusy;
  haltListening();
  answered=true;
@@ -141,7 +180,7 @@ function answer(i){
  };
  // On iOS, playing audio inside SpeechRecognition.onresult races the microphone
  // shutdown and can leave both playback and auto-next stuck. Give it time to close.
- if(wasListening)setTimeout(playFeedback,1100);else playFeedback();
+ playFeedback();
 }
 function normalize(q){if(!q||typeof q!=='object')throw Error('Invalid question');let choices=q.choices||(q.options&&letters.map(l=>q.options[l]));let correct=Number.isInteger(q.correct)?q.correct:letters.indexOf(q.correct_answer);let explanations=q.explanations||(q.incorrect_explanations&&letters.map((l,i)=>i===correct?q.explanation:q.incorrect_explanations[l]));if(!q.id||!q.question||!Array.isArray(choices)||choices.length!==4||choices.some(c=>typeof c!=='string'||!c.trim())||correct<0||correct>3||!q.topic)throw Error('Invalid question fields');return {id:q.id,question:q.question,choices,correct,explanations:explanations||[q.explanation||'',q.explanation||'',q.explanation||'',q.explanation||''],topic:q.topic,category:q.category||'Other',objective:q.objective||q.topic,source:q.source||'Original',status:q.status||'unreviewed'}}
 $('file').onchange=async e=>{try{let raw=JSON.parse(await e.target.files[0].text());if(!Array.isArray(raw)||!raw.length)throw Error('Expected a nonempty array');let qs=raw.map(normalize),ids=new Set(bank().map(q=>q.id)),added=0;for(let q of qs){if(!ids.has(q.id)){imported.push(q);ids.add(q.id);added++}}save();refresh();$('status').textContent=`Imported ${added} questions. ${qs.length-added} duplicate IDs skipped.`}catch(err){$('status').textContent='Import failed: '+err.message}};
@@ -157,8 +196,33 @@ function interpretVoice(text){
  const words=t.split(' '),map={a:0,ay:0,alpha:0,one:0,first:0,b:1,bee:1,be:1,bravo:1,two:1,second:1,c:2,see:2,sea:2,charlie:2,three:2,third:2,d:3,dee:3,delta:3,four:3,fourth:3};
  let choice=words.length===1?map[words[0]]:undefined;
  if(choice===undefined){let m=t.match(/(?:answer|option|choice|letter|i (?:choose|pick|think|say)|it is|it's|the answer is)\s+(?:is\s+)?(a|ay|alpha|one|first|b|bee|be|bravo|two|second|c|see|sea|charlie|three|third|d|dee|delta|four|fourth)\b/);if(m)choice=map[m[1]]}
- if(choice!==undefined){answer(choice);return true}
+ if(choice!==undefined){handoffSpokenAnswer(choice);return true}
  return false;
+}
+let handoffPending=false;
+function handoffSpokenAnswer(choice){
+ if(handoffPending||answered||!current())return;
+ handoffPending=true;
+ const r=recognition, q=current(), epoch=voiceEpoch;
+ // Keep recognition's onend until the microphone has released its audio session.
+ clearTimeout(voiceRetry);clearTimeout(listenWatchdog);
+ let handedOff=false;
+ function finishHandoff(){
+  if(handedOff)return;handedOff=true;handoffPending=false;
+  if(current()!==q||answered||epoch!==voiceEpoch)return;
+  if(r){r.onresult=null;r.onerror=null;r.onend=null}
+  recognition=null;voiceBusy=false;
+  // Allow iOS to switch its audio route after onend.
+  setTimeout(()=>{if(current()===q&&!answered&&epoch===voiceEpoch)answer(choice)},350);
+ }
+ if(r){
+  r.onresult=null;
+  r.onerror=()=>finishHandoff();
+  r.onend=()=>finishHandoff();
+  try{r.stop()}catch{finishHandoff()}
+  // Some iOS versions never send onend after stop().
+  setTimeout(finishHandoff,1800);
+ }else finishHandoff();
 }
 function scheduleListen(epoch,delay=500){
  clearTimeout(voiceRetry);
@@ -166,7 +230,7 @@ function scheduleListen(epoch,delay=500){
  voiceRetry=setTimeout(()=>{if(epoch===voiceEpoch)startListening()},delay);
 }
 function startListening(){
- if(!SR||!voiceEnabled||voiceBlocked||answered||!current()||voiceBusy||speaking)return;
+ if(!SR||!voiceEnabled||voiceBlocked||answered||!current()||voiceBusy||speaking||handoffPending)return;
  clearTimeout(voiceRetry);clearTimeout(listenWatchdog);
  const epoch=voiceEpoch, q=current(), r=new SR();
  recognition=r;voiceBusy=true;
