@@ -20,7 +20,7 @@ button{font:inherit;cursor:pointer;border:0;border-radius:13px;padding:12px 15px
 <header><div class="brand"><span class="brandmark">✦</span><span>NPTE VOICE PREP</span></div><h1>Practice with purpose.</h1><p>Build clinical confidence, one question at a time.</p></header>
 <section id="home"><div class="eyebrow">Your study dashboard</div><h2>Ready for a practice session?</h2><p class="muted" style="margin:0">25 mixed-topic questions with spoken prompts, hands-free answers, and clear explanations.</p>
 <div class="stats"><div class="stat"><strong id="availableNum">200</strong><span>Questions available</span></div><div class="stat"><strong id="attemptedNum">0</strong><span>Unique questions attempted</span></div></div>
-<div style="margin-top:18px"><label for="voiceChoice" style="display:block;font-weight:650;font-size:14px;margin-bottom:7px">Narrator voice</label><select id="voiceChoice" style="width:100%;padding:12px;border:1px solid var(--border);border-radius:12px;background:white;color:var(--ink);font:inherit"><option value="">Best available voice</option></select><p class="muted" style="font-size:12px;margin:5px 0 0">Voice options depend on your iPhone or browser.</p></div><button class="primary" id="start">Start 25-question practice</button></section>
+<div style="margin-top:18px"><label for="voiceChoice" style="display:block;font-weight:650;font-size:14px;margin-bottom:7px">Narrator voice</label><select id="voiceChoice" style="width:100%;padding:12px;border:1px solid var(--border);border-radius:12px;background:white;color:var(--ink);font:inherit"><option value="offline">Free saved AI narrator</option><option value="ai">Natural AI narrator (Orion — American male voice)</option><option value="">Best available iPhone voice</option></select><p class="muted" style="font-size:12px;margin:5px 0 0">Orion is your selected Cloudflare AI narrator. The iPhone voice remains available as a fallback.</p><div id="aiSetup" style="margin-top:12px"><label for="aiEndpoint" style="display:block;font-size:14px;font-weight:650">Secure voice service URL</label><input id="aiEndpoint" type="url" placeholder="https://your-worker.workers.dev" style="width:100%;padding:12px;border:1px solid var(--border);border-radius:12px;font:inherit;margin-top:6px"><p class="muted" style="font-size:12px;margin:5px 0 0">No API key needed here. This uses your Cloudflare Workers AI narrator.</p><button type="button" id="testVoice" style="background:var(--light);color:var(--teal);margin-top:9px">▶ Test narrator</button></div></div><button class="primary" id="start">Start 25-question practice</button></section>
 <section id="practice"><div class="eyebrow">Practice session</div><p id="progress"></p><p id="status" aria-live="polite">Press Start to begin.</p><h3 id="question">Your next clinical challenge is ready.</h3><div id="choices"></div><div id="feedback" aria-live="polite"></div>
 <p class="muted" style="font-size:13px;margin:10px 0 0">Tap the microphone once to enable voice answers. The app will listen automatically after reading each question. iPhone Safari may occasionally require another tap.</p><div class="actions"><button id="listen" disabled>🎙 Answer by voice</button><button id="repeat" disabled>↻ Hear question again</button><button id="next" disabled>Next question →</button></div><button id="stop" style="background:transparent;color:var(--muted);font-size:13px;padding:9px 0;margin-top:8px">Stop audio</button></section>
 <section><div class="eyebrow">Your progress</div><h2>Study insights</h2><div id="report"></div></section>
@@ -32,41 +32,82 @@ const $=id=>document.getElementById(id),letters=['A','B','C','D'];let imported=[
 try{imported=JSON.parse(localStorage.getItem('npteImportedV2')||'[]');history=JSON.parse(localStorage.getItem('npteHistoryV2')||'[]')}catch{};
 const bank=()=>{let m=new Map();for(let q of [...builtIn,...imported])m.set(q.id,q);return [...m.values()]};
 function save(){localStorage.setItem('npteImportedV2',JSON.stringify(imported));localStorage.setItem('npteHistoryV2',JSON.stringify(history))}
-let voiceOptions=[];
+let voiceOptions=[],activeAudio=null,activeAudioURL=null,activeRequest=null,playbackToken=0;
 function loadVoices(){
  if(!('speechSynthesis' in window))return;
- const prior=$('voiceChoice').value||localStorage.getItem('npteVoiceChoice')||'';
+ const prior=localStorage.getItem('npteVoiceChoice')||'offline';
  voiceOptions=speechSynthesis.getVoices().filter(v=>v.lang.toLowerCase().startsWith('en'));
  const sel=$('voiceChoice');sel.replaceChildren();
- let defaultOpt=document.createElement('option');defaultOpt.value='';defaultOpt.textContent='Best available voice';sel.append(defaultOpt);
+ const offline=document.createElement('option');offline.value='offline';offline.textContent='Free saved AI narrator (no usage limits)';sel.append(offline);
+ const ai=document.createElement('option');ai.value='ai';ai.textContent='Natural AI narrator (Orion — American male voice)';sel.append(ai);
+ const def=document.createElement('option');def.value='';def.textContent='Best available iPhone voice';sel.append(def);
  voiceOptions.forEach(v=>{let o=document.createElement('option');o.value=v.voiceURI;o.textContent=`${v.name} (${v.lang})`;sel.append(o)});
- sel.value=voiceOptions.some(v=>v.voiceURI===prior)?prior:'';
+ sel.value=['offline','ai',''].includes(prior)||voiceOptions.some(v=>v.voiceURI===prior)?prior:'offline';
+ $('aiSetup').style.display=sel.value==='ai'?'block':'none';
 }
 function bestVoice(){
  const selected=$('voiceChoice').value;
- if(selected)return voiceOptions.find(v=>v.voiceURI===selected);
+ if(selected&&selected!=='ai')return voiceOptions.find(v=>v.voiceURI===selected);
  const preferred=voiceOptions.find(v=>/samantha|ava|allison|siri|natural|enhanced|premium/i.test(v.name));
  return preferred||voiceOptions.find(v=>v.localService)||voiceOptions[0];
 }
-function say(t,done){
- speaking=true;
- if(!('speechSynthesis'in window)){speaking=false;if(done)done();return}
- speechSynthesis.cancel();
- let u=new SpeechSynthesisUtterance(t);
- const v=bestVoice();if(v)u.voice=v;
- u.rate=.94;u.pitch=1.02;
- let finished=false;const finish=()=>{if(!finished){finished=true;speaking=false;if(done)done()}};u.onend=finish;u.onerror=finish
- speechSynthesis.speak(u);
+function cancelNarration(){
+ playbackToken++;
+ if(activeRequest){activeRequest.abort();activeRequest=null}
+ if(activeAudio){activeAudio.pause();activeAudio.src='';activeAudio=null}
+ if(activeAudioURL){URL.revokeObjectURL(activeAudioURL);activeAudioURL=null}
+ if('speechSynthesis' in window)speechSynthesis.cancel();
+ speaking=false;
 }
-$('voiceChoice').onchange=()=>{localStorage.setItem('npteVoiceChoice',$('voiceChoice').value);say('Hi! I will be your NPTE practice partner.')};
+function say(t,done,clipKey){
+ cancelNarration();speaking=true;
+ const token=playbackToken;
+ let finished=false;
+ const finish=()=>{if(finished||token!==playbackToken)return;finished=true;speaking=false;if(done)done()};
+ const localVoice=()=>{
+  if(token!==playbackToken)return;
+  if(!('speechSynthesis'in window)){finish();return}
+  let u=new SpeechSynthesisUtterance(t),v=bestVoice();if(v)u.voice=v;
+  u.rate=.94;u.pitch=1.02;u.onend=finish;u.onerror=finish;speechSynthesis.speak(u);
+ };
+ if($('voiceChoice').value==='offline'){
+  if(!clipKey){localVoice();return}
+  const audio=new Audio('narration/'+encodeURIComponent(clipKey)+'.mp3');activeAudio=audio;
+  audio.onended=()=>{if(token!==playbackToken)return;activeAudio=null;finish()};
+  audio.onerror=()=>{if(token!==playbackToken)return;activeAudio=null;$('status').textContent='Saved narration missing for this item. Using iPhone voice.';localVoice()};
+  audio.play().catch(()=>{if(token!==playbackToken)return;localVoice()});
+  return;
+ }
+ const endpoint=($('aiEndpoint').value||'').trim().replace(/\/+$/,'');
+ if($('voiceChoice').value!=='ai'){localVoice();return}
+ if(!/^https:\/\//i.test(endpoint)){
+  $('status').textContent='Cloudflare voice service URL is missing. Using iPhone voice for now.';
+  localVoice();return;
+ }
+ const controller=new AbortController();activeRequest=controller;
+ fetch(endpoint,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text:t}),signal:controller.signal})
+ .then(async response=>{if(!response.ok)throw Error('Voice service returned '+response.status);return response.blob()})
+ .then(blob=>{
+  if(token!==playbackToken)return;
+  activeRequest=null;activeAudioURL=URL.createObjectURL(blob);
+  const audio=new Audio(activeAudioURL);activeAudio=audio;audio.preload='auto';
+  audio.onended=()=>{if(token!==playbackToken)return;activeAudio=null;URL.revokeObjectURL(activeAudioURL);activeAudioURL=null;finish()};
+  audio.onerror=()=>{if(token!==playbackToken)return;activeAudio=null;if(activeAudioURL){URL.revokeObjectURL(activeAudioURL);activeAudioURL=null} $('status').textContent='AI audio could not play. Switching to iPhone voice.';localVoice()};
+  audio.play().catch(()=>{if(token!==playbackToken)return;$('status').textContent='iPhone blocked AI audio. Tap Test narrator to allow playback.';localVoice()});
+ }).catch(err=>{if(token!==playbackToken||err.name==='AbortError')return;activeRequest=null;$('status').textContent='AI narrator unavailable ('+err.message+'). Using iPhone voice.';localVoice()});
+}
+$('aiEndpoint').value='https://npte-voice-prep.adasyn-clarkson1.workers.dev/tts';
+$('aiEndpoint').onchange=()=>localStorage.setItem('npteAIEndpoint',$('aiEndpoint').value.trim());
+$('voiceChoice').onchange=()=>{localStorage.setItem('npteVoiceChoice',$('voiceChoice').value);$('aiSetup').style.display=$('voiceChoice').value==='ai'?'block':'none';say('Hi! I will be your NPTE practice partner.')};
+$('testVoice').onclick=()=>{localStorage.setItem('npteAIEndpoint',$('aiEndpoint').value.trim());say('Welcome to NPTE Voice Prep. I will read each question, listen for your answer, and explain the clinical reasoning.')};
 if('speechSynthesis'in window){loadVoices();speechSynthesis.onvoiceschanged=loadVoices}
 function haltListening(){voiceEpoch++;clearTimeout(voiceRetry);clearTimeout(listenWatchdog);listenWatchdog=null;voiceRetry=null;voiceBusy=false;const old=recognition;recognition=null;if(old){old.onend=null;old.onerror=null;old.onresult=null;try{old.abort()}catch{}}}
-function stop(){haltListening();speaking=false;if('speechSynthesis' in window)speechSynthesis.cancel()}
+function stop(){haltListening();cancelNarration()}
 function current(){return exam[pos]}
 function refresh(){let seen=new Set(history.map(x=>x.id));$('count').textContent=`${bank().length} questions available · ${[...seen].filter(id=>bank().some(q=>q.id===id)).length} unique questions attempted`;renderReport();$('availableNum').textContent=bank().length;$('attemptedNum').textContent=[...seen].filter(id=>bank().some(q=>q.id===id)).length}
 function renderReport(){let wrong=history.filter(x=>!x.correct),groups={};for(let x of history){let t=x.objective||x.topic||'Other';groups[t]??={total:0,wrong:0};groups[t].total++;if(!x.correct)groups[t].wrong++}let total=history.length;let el=$('report');el.replaceChildren();let p=document.createElement('p');p.textContent=`${total} attempts · ${total?Math.round(100*(total-wrong.length)/total):0}% correct · ${wrong.length} missed`;el.append(p);let h=document.createElement('h3');h.textContent='Specific concepts to review';el.append(h);let entries=Object.entries(groups).filter(([_,v])=>v.wrong).sort((a,b)=>b[1].wrong-a[1].wrong);if(!entries.length){let x=document.createElement('p');x.textContent='No missed concepts recorded.';el.append(x)}for(let [t,v] of entries){let x=document.createElement('p');x.textContent=`${t}: ${v.wrong} missed of ${v.total} attempts`;el.append(x)}}
 function present(){haltListening();let q=current();if(!q){$('status').textContent='Session complete';$('question').textContent='';$('choices').replaceChildren();$('feedback').replaceChildren();$('next').disabled=true;$('listen').disabled=true;$('repeat').disabled=true;renderReport();say('Session complete. Review your results below.');return}answered=false;$('status').textContent='Listen or choose an answer.';$('feedback').replaceChildren();$('next').disabled=true;$('listen').disabled=!SR;$('repeat').disabled=false;$('progress').textContent=`Question ${pos+1} of ${exam.length} · ${q.category} · ${q.topic}`;$('question').textContent=q.question;$('choices').replaceChildren();q.choices.forEach((c,i)=>{let b=document.createElement('button');b.textContent=`${letters[i]}. ${c}`;b.onclick=()=>answer(i);$('choices').append(b)});readQuestion()}
-function readQuestion(){let q=current();if(!q||answered)return;haltListening();$('status').textContent='Reading question aloud…';const epoch=voiceEpoch; say(`Question ${pos+1}. ${q.question}. ${q.choices.map((x,i)=>`Choice ${letters[i]}. ${x}.`).join(' ')}.`,()=>{if(epoch===voiceEpoch&&!answered&&current()===q){if(voiceEnabled&&!voiceBlocked)startListening();else $('status').textContent='Tap Answer by voice once to enable hands-free listening.'}})}
+function readQuestion(){let q=current();if(!q||answered)return;haltListening();$('status').textContent='Reading question aloud…';const epoch=voiceEpoch; say(`Question ${pos+1}. ${q.question}. ${q.choices.map((x,i)=>`Choice ${letters[i]}. ${x}.`).join(' ')}.`,()=>{if(epoch===voiceEpoch&&!answered&&current()===q){if(voiceEnabled&&!voiceBlocked)startListening();else $('status').textContent='Tap Answer by voice once to enable hands-free listening.'}},q.id+'_question')}
 function answer(i){
  if(answered||!current())return;haltListening();
  answered=true;
@@ -90,7 +131,7 @@ function answer(i){
   ?`You got it! ${selectedReason} Ready for the next one?`
   :`Not quite. ${selectedReason} The correct answer is ${letters[q.correct]}. ${correctReason} Let's keep going.`;
  const thisSession=session;
- say(spoken,()=>{if($('autonext').checked&&thisSession===session&&answered&&current()===q){pos++;present()}});
+ say(spoken,()=>{if($('autonext').checked&&thisSession===session&&answered&&current()===q){pos++;present()}},q.id+'_answer'+i);
 }
 function normalize(q){if(!q||typeof q!=='object')throw Error('Invalid question');let choices=q.choices||(q.options&&letters.map(l=>q.options[l]));let correct=Number.isInteger(q.correct)?q.correct:letters.indexOf(q.correct_answer);let explanations=q.explanations||(q.incorrect_explanations&&letters.map((l,i)=>i===correct?q.explanation:q.incorrect_explanations[l]));if(!q.id||!q.question||!Array.isArray(choices)||choices.length!==4||choices.some(c=>typeof c!=='string'||!c.trim())||correct<0||correct>3||!q.topic)throw Error('Invalid question fields');return {id:q.id,question:q.question,choices,correct,explanations:explanations||[q.explanation||'',q.explanation||'',q.explanation||'',q.explanation||''],topic:q.topic,category:q.category||'Other',objective:q.objective||q.topic,source:q.source||'Original',status:q.status||'unreviewed'}}
 $('file').onchange=async e=>{try{let raw=JSON.parse(await e.target.files[0].text());if(!Array.isArray(raw)||!raw.length)throw Error('Expected a nonempty array');let qs=raw.map(normalize),ids=new Set(bank().map(q=>q.id)),added=0;for(let q of qs){if(!ids.has(q.id)){imported.push(q);ids.add(q.id);added++}}save();refresh();$('status').textContent=`Imported ${added} questions. ${qs.length-added} duplicate IDs skipped.`}catch(err){$('status').textContent='Import failed: '+err.message}};
@@ -154,7 +195,7 @@ function startListening(){
   $('status').textContent='🎙 Retrying microphone…';scheduleListen(epoch,Math.min(600+listenAttempts*250,2000));
  }
 }
-if(SR){$('listen').onclick=()=>{if(!current()||answered)return;voiceBlocked=false;voiceEnabled=true;haltListening();speaking=false;if('speechSynthesis' in window)speechSynthesis.cancel();startListening()};$('listen').textContent='🎙 Enable voice answers'}
+if(SR){$('listen').onclick=()=>{if(!current()||answered)return;voiceBlocked=false;voiceEnabled=true;haltListening();cancelNarration();startListening()};$('listen').textContent='🎙 Enable voice answers'}
 else{$('listen').disabled=true;$('status').textContent='Speech recognition is not supported in this browser. Tap answers instead.'}
 refresh();
 </script></body></html>
