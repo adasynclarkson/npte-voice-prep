@@ -54,13 +54,11 @@ function bestVoice(){
 function cancelNarration(){
  playbackToken++;
  if(activeRequest){activeRequest.abort();activeRequest=null}
- if(activeAudio){activeAudio.pause();if(activeAudio!==kokoroPlayer)activeAudio.src='';activeAudio=null}
+ if(activeAudio){activeAudio.pause();activeAudio.src='';activeAudio=null}
  if(activeAudioURL){URL.revokeObjectURL(activeAudioURL);activeAudioURL=null}
  if('speechSynthesis' in window)speechSynthesis.cancel();
  speaking=false;
 }
-const kokoroPlayer = new Audio();
-kokoroPlayer.preload='auto';
 function say(t,done,clipKey){
  cancelNarration();speaking=true;
  const token=playbackToken;
@@ -74,16 +72,10 @@ function say(t,done,clipKey){
  };
  if($('voiceChoice').value==='offline'){
   if(!clipKey){localVoice();return}
-  // Reuse the same media element across question and feedback narration on iOS.
-  // New Audio() for every response can lose Safari's user-activated playback state.
-  const audio=kokoroPlayer;activeAudio=audio;
-  audio.onended=()=>{if(token!==playbackToken)return;activeAudio=null;finish()};
+  const audio=new Audio('narration/'+encodeURIComponent(clipKey)+'.mp3');activeAudio=audio;
+  audio.onended=()=>{if(token!==playbackToken)return;activeAudio=null;audio.removeAttribute('src');audio.load();finish()};
   audio.onerror=()=>{if(token!==playbackToken)return;activeAudio=null;$('status').textContent='Saved narration missing for this item. Using iPhone voice.';localVoice()};
-  audio.src='narration/'+encodeURIComponent(clipKey)+'.mp3';
-  audio.play().catch(err=>{if(token!==playbackToken)return;activeAudio=null;
-   $('status').textContent='iPhone interrupted recorded feedback; trying voice fallback.';
-   localVoice();
-  });
+  audio.play().catch(()=>{if(token!==playbackToken)return;localVoice()});
   return;
  }
  const endpoint=($('aiEndpoint').value||'').trim().replace(/\/+$/,'');
