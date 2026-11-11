@@ -158,44 +158,88 @@ function scheduleListen(epoch,delay=500){
 function startListening(){
  if(!SR||!voiceEnabled||voiceBlocked||answered||!current()||voiceBusy||speaking)return;
  clearTimeout(voiceRetry);clearTimeout(listenWatchdog);
- const epoch=voiceEpoch;let r=new SR();recognition=r;voiceBusy=true;
+ const epoch=voiceEpoch, q=current(), r=new SR();
+ recognition=r;voiceBusy=true;
  r.lang='en-US';r.continuous=false;r.interimResults=true;r.maxAlternatives=5;
- let received=false,started=false,ended=false;
- r.onstart=()=>{if(epoch!==voiceEpoch)return;started=true;lastListenStart=Date.now();listenAttempts=0;$('status').textContent='🎙 Listening for your answer…';};
- r.onresult=e=>{if(epoch!==voiceEpoch||answered)return;
-  let heard='';for(let i=e.resultIndex;i<e.results.length;i++){
+ let ended=false,heardSpeech=false,lastActivity=Date.now(),watchdog=null;
+ function valid(){return epoch===voiceEpoch&&recognition===r&&!answered&&current()===q}
+ function clearWatch(){clearTimeout(watchdog);clearTimeout(listenWatchdog);listenWatchdog=null}
+ function reconnect(message,delay=500){
+  if(!valid()||ended)return;
+  ended=true;clearWatch();
+  r.onend=null;r.onerror=null;r.onresult=null;
+  try{r.abort()}catch{}
+  recognition=null;voiceBusy=false;
+  if(voiceEnabled&&!voiceBlocked&&!speaking){
+   $('status').textContent=message;
+   scheduleListen(epoch,delay);
+  }
+ }
+ function watch(){
+  clearWatch();
+  // Safari can stop delivering recognition events while leaving its UI showing "Listening".
+  // Do not interrupt someone who has just begun speaking.
+  watchdog=setTimeout(()=>{
+   if(!valid()||ended)return;
+   const idle=Date.now()-lastActivity;
+   if(idle<9500){watch();return}
+   reconnect('🎙 Refreshing microphone connection…',700);
+  },10000);
+  listenWatchdog=watchdog;
+ }
+ r.onstart=()=>{if(!valid())return;
+  lastListenStart=Date.now();lastActivity=Date.now();listenAttempts=0;
+  $('status').textContent='🎙 Listening for your answer…';watch();
+ };
+ r.onaudiostart=()=>{if(!valid())return;lastActivity=Date.now();watch()};
+ r.onspeechstart=()=>{if(!valid())return;heardSpeech=true;lastActivity=Date.now();watch()};
+ r.onresult=e=>{if(!valid())return;
+  lastActivity=Date.now();watch();
+  let heard='';
+  for(let i=e.resultIndex;i<e.results.length;i++){
    for(let j=0;j<e.results[i].length;j++){
-    let candidate=e.results[i][j].transcript;heard=candidate;
-    if(interpretVoice(candidate)){received=true;return}
+    const candidate=e.results[i][j].transcript;heard=candidate;
+    if(interpretVoice(candidate))return;
    }
   }
-  if(heard&&e.results[e.results.length-1]?.isFinal)$('status').textContent=`Heard “${heard}”. Still listening…`;
+  if(heard&&e.results[e.results.length-1]?.isFinal)
+   $('status').textContent=`Heard “${heard}”. Say A, B, C, or D.`;
  };
- r.onerror=e=>{if(epoch!==voiceEpoch)return;
+ r.onerror=e=>{if(!valid()||ended)return;
   if(['not-allowed','service-not-allowed','audio-capture'].includes(e.error)){
-   voiceBlocked=true;voiceEnabled=false;$('status').textContent='Microphone access needs another tap or Safari permission. Tap Enable voice answers to resume.';
-  }else if(e.error!=='aborted'&&e.error!=='no-speech'){$('status').textContent='Listening was interrupted. Reconnecting…'};
- };
- r.onend=()=>{if(ended||epoch!==voiceEpoch)return;ended=true;clearTimeout(listenWatchdog);voiceBusy=false;recognition=null;
-  if(voiceEnabled&&!voiceBlocked&&!answered&&current()&&!speaking){
-   listenAttempts++;scheduleListen(epoch,Math.min(350+listenAttempts*150,1500));
+   voiceBlocked=true;voiceEnabled=false;ended=true;clearWatch();
+   voiceBusy=false;recognition=null;
+   $('status').textContent='Microphone needs permission or another tap. Tap Enable voice answers to resume.';
+  }else if(e.error==='aborted'){
+   // onend normally follows; if Safari omits it, watchdog will recover.
+  }else{
+   $('status').textContent='🎙 Microphone reconnecting…';
   }
  };
- try{
-  r.start();
-  listenWatchdog=setTimeout(()=>{
-   if(epoch!==voiceEpoch||recognition!==r||answered)return;
-   // Some iOS WebKit versions silently end recognition without dispatching onend.
-   r.onend=null;r.onerror=null;r.onresult=null;
-   try{r.abort()}catch{}
-   voiceBusy=false;recognition=null;
-   if(voiceEnabled&&!voiceBlocked&&!speaking){$('status').textContent='🎙 Reconnecting microphone…';scheduleListen(epoch,600)}
-  },12000);
- }catch(e){voiceBusy=false;recognition=null;listenAttempts++;
-  $('status').textContent='🎙 Retrying microphone…';scheduleListen(epoch,Math.min(600+listenAttempts*250,2000));
+ r.onend=()=>{if(!valid()||ended)return;
+  ended=true;clearWatch();voiceBusy=false;recognition=null;
+  if(voiceEnabled&&!voiceBlocked&&!answered&&!speaking){
+   listenAttempts++;
+   $('status').textContent='🎙 Reconnecting microphone…';
+   scheduleListen(epoch,Math.min(350+listenAttempts*150,1500));
+  }
+ };
+ try{r.start();lastActivity=Date.now();watch()}
+ catch(e){
+  ended=true;clearWatch();voiceBusy=false;recognition=null;
+  listenAttempts++;
+  $('status').textContent='🎙 Retrying microphone…';
+  scheduleListen(epoch,Math.min(600+listenAttempts*250,2000));
  }
 }
 if(SR){$('listen').onclick=()=>{if(!current()||answered)return;voiceBlocked=false;voiceEnabled=true;haltListening();cancelNarration();startListening()};$('listen').textContent='🎙 Enable voice answers'}
 else{$('listen').disabled=true;$('status').textContent='Speech recognition is not supported in this browser. Tap answers instead.'}
+document.addEventListener('visibilitychange',()=>{
+ if(document.hidden && voiceBusy && !speaking){
+  $('status').textContent='iPhone may pause microphone when the app is in the background.';
+ }else if(!document.hidden && voiceEnabled && !answered && current() && !speaking && !voiceBusy){
+  scheduleListen(voiceEpoch,450);
+ }
+});
 refresh();
 </script></body></html>
