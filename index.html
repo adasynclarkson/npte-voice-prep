@@ -107,7 +107,7 @@ function current(){return exam[pos]}
 function refresh(){let seen=new Set(history.map(x=>x.id));$('count').textContent=`${bank().length} questions available · ${[...seen].filter(id=>bank().some(q=>q.id===id)).length} unique questions attempted`;renderReport();$('availableNum').textContent=bank().length;$('attemptedNum').textContent=[...seen].filter(id=>bank().some(q=>q.id===id)).length}
 function renderReport(){let wrong=history.filter(x=>!x.correct),groups={};for(let x of history){let t=x.objective||x.topic||'Other';groups[t]??={total:0,wrong:0};groups[t].total++;if(!x.correct)groups[t].wrong++}let total=history.length;let el=$('report');el.replaceChildren();let p=document.createElement('p');p.textContent=`${total} attempts · ${total?Math.round(100*(total-wrong.length)/total):0}% correct · ${wrong.length} missed`;el.append(p);let h=document.createElement('h3');h.textContent='Specific concepts to review';el.append(h);let entries=Object.entries(groups).filter(([_,v])=>v.wrong).sort((a,b)=>b[1].wrong-a[1].wrong);if(!entries.length){let x=document.createElement('p');x.textContent='No missed concepts recorded.';el.append(x)}for(let [t,v] of entries){let x=document.createElement('p');x.textContent=`${t}: ${v.wrong} missed of ${v.total} attempts`;el.append(x)}}
 function present(){haltListening();let q=current();if(!q){$('status').textContent='Session complete';$('question').textContent='';$('choices').replaceChildren();$('feedback').replaceChildren();$('next').disabled=true;$('listen').disabled=true;$('repeat').disabled=true;renderReport();say('Session complete. Review your results below.');return}answered=false;$('status').textContent='Listen or choose an answer.';$('feedback').replaceChildren();$('next').disabled=true;$('listen').disabled=!SR;$('repeat').disabled=false;$('progress').textContent=`Question ${pos+1} of ${exam.length} · ${q.category} · ${q.topic}`;$('question').textContent=q.question;$('choices').replaceChildren();q.choices.forEach((c,i)=>{let b=document.createElement('button');b.textContent=`${letters[i]}. ${c}`;b.onclick=()=>answer(i);$('choices').append(b)});readQuestion()}
-function readQuestion(){let q=current();if(!q||answered)return;haltListening();$('status').textContent='Reading question aloud…';const epoch=voiceEpoch; say(`Question ${pos+1}. ${q.question}. ${q.choices.map((x,i)=>`Choice ${letters[i]}. ${x}.`).join(' ')}.`,()=>{if(epoch===voiceEpoch&&!answered&&current()===q){if(voiceEnabled&&!voiceBlocked){$('status').textContent='Preparing microphone…';setTimeout(()=>{if(epoch===voiceEpoch&&!answered&&current()===q&&voiceEnabled&&!voiceBlocked)startListening()},850)}else $('status').textContent='Tap Answer by voice once to enable hands-free listening.'}},q.id+'_question')}
+function readQuestion(){let q=current();if(!q||answered)return;haltListening();$('status').textContent='Reading question aloud…';const epoch=voiceEpoch; say(`Question ${pos+1}. ${q.question}. ${q.choices.map((x,i)=>`Choice ${letters[i]}. ${x}.`).join(' ')}.`,()=>{if(epoch===voiceEpoch&&!answered&&current()===q){if(voiceEnabled&&!voiceBlocked){$('status').textContent='Preparing microphone…';setTimeout(()=>{if(epoch===voiceEpoch&&!answered&&current()===q&&voiceEnabled&&!voiceBlocked)startListening()},1600)}else $('status').textContent='Tap Answer by voice once to enable hands-free listening.'}},q.id+'_question')}
 function answer(i){
  if(answered||!current())return;
  // Speech recognition must release the iPhone audio session before MP3 playback.
@@ -141,7 +141,7 @@ function answer(i){
  };
  // On iOS, playing audio inside SpeechRecognition.onresult races the microphone
  // shutdown and can leave both playback and auto-next stuck. Give it time to close.
- if(wasListening)setTimeout(playFeedback,850);else playFeedback();
+ if(wasListening)setTimeout(playFeedback,1100);else playFeedback();
 }
 function normalize(q){if(!q||typeof q!=='object')throw Error('Invalid question');let choices=q.choices||(q.options&&letters.map(l=>q.options[l]));let correct=Number.isInteger(q.correct)?q.correct:letters.indexOf(q.correct_answer);let explanations=q.explanations||(q.incorrect_explanations&&letters.map((l,i)=>i===correct?q.explanation:q.incorrect_explanations[l]));if(!q.id||!q.question||!Array.isArray(choices)||choices.length!==4||choices.some(c=>typeof c!=='string'||!c.trim())||correct<0||correct>3||!q.topic)throw Error('Invalid question fields');return {id:q.id,question:q.question,choices,correct,explanations:explanations||[q.explanation||'',q.explanation||'',q.explanation||'',q.explanation||''],topic:q.topic,category:q.category||'Other',objective:q.objective||q.topic,source:q.source||'Original',status:q.status||'unreviewed'}}
 $('file').onchange=async e=>{try{let raw=JSON.parse(await e.target.files[0].text());if(!Array.isArray(raw)||!raw.length)throw Error('Expected a nonempty array');let qs=raw.map(normalize),ids=new Set(bank().map(q=>q.id)),added=0;for(let q of qs){if(!ids.has(q.id)){imported.push(q);ids.add(q.id);added++}}save();refresh();$('status').textContent=`Imported ${added} questions. ${qs.length-added} duplicate IDs skipped.`}catch(err){$('status').textContent='Import failed: '+err.message}};
@@ -171,7 +171,7 @@ function startListening(){
  const epoch=voiceEpoch, q=current(), r=new SR();
  recognition=r;voiceBusy=true;
  r.lang='en-US';r.continuous=false;r.interimResults=true;r.maxAlternatives=5;
- let ended=false,heardSpeech=false,lastActivity=Date.now(),watchdog=null;
+ let ended=false,started=false,heardSpeech=false,lastActivity=Date.now(),watchdog=null;
  function valid(){return epoch===voiceEpoch&&recognition===r&&!answered&&current()===q}
  function clearWatch(){clearTimeout(watchdog);clearTimeout(listenWatchdog);listenWatchdog=null}
  function reconnect(message,delay=500){
@@ -193,12 +193,12 @@ function startListening(){
    if(!valid()||ended)return;
    const idle=Date.now()-lastActivity;
    if(idle<9500){watch();return}
-   reconnect('🎙 Refreshing microphone connection…',700);
+   reconnect('🎙 Refreshing microphone connection…',1400);
   },10000);
   listenWatchdog=watchdog;
  }
  r.onstart=()=>{if(!valid())return;
-  lastListenStart=Date.now();lastActivity=Date.now();listenAttempts=0;
+  started=true;lastListenStart=Date.now();lastActivity=Date.now();listenAttempts=0;
   $('status').textContent='🎙 Listening for your answer…';watch();
  };
  r.onaudiostart=()=>{if(!valid())return;lastActivity=Date.now();watch()};
@@ -224,6 +224,7 @@ function startListening(){
    // onend normally follows; if Safari omits it, watchdog will recover.
   }else{
    $('status').textContent='🎙 Microphone reconnecting…';
+   reconnect('🎙 Reconnecting microphone…',1000);
   }
  };
  r.onend=()=>{if(!valid()||ended)return;
@@ -234,7 +235,11 @@ function startListening(){
    scheduleListen(epoch,Math.min(350+listenAttempts*150,1500));
   }
  };
- try{r.start();lastActivity=Date.now();watch()}
+ try{r.start();lastActivity=Date.now();
+  // Some Safari sessions never fire onstart; recover instead of showing a false listening state.
+  watchdog=setTimeout(()=>{if(valid()&&!ended&&!started){reconnect('🎙 Reconnecting microphone…',1100)}},5500);
+  listenWatchdog=watchdog;
+ }
  catch(e){
   ended=true;clearWatch();voiceBusy=false;recognition=null;
   listenAttempts++;
