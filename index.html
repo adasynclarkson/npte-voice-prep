@@ -109,7 +109,10 @@ function renderReport(){let wrong=history.filter(x=>!x.correct),groups={};for(le
 function present(){haltListening();let q=current();if(!q){$('status').textContent='Session complete';$('question').textContent='';$('choices').replaceChildren();$('feedback').replaceChildren();$('next').disabled=true;$('listen').disabled=true;$('repeat').disabled=true;renderReport();say('Session complete. Review your results below.');return}answered=false;$('status').textContent='Listen or choose an answer.';$('feedback').replaceChildren();$('next').disabled=true;$('listen').disabled=!SR;$('repeat').disabled=false;$('progress').textContent=`Question ${pos+1} of ${exam.length} · ${q.category} · ${q.topic}`;$('question').textContent=q.question;$('choices').replaceChildren();q.choices.forEach((c,i)=>{let b=document.createElement('button');b.textContent=`${letters[i]}. ${c}`;b.onclick=()=>answer(i);$('choices').append(b)});readQuestion()}
 function readQuestion(){let q=current();if(!q||answered)return;haltListening();$('status').textContent='Reading question aloud…';const epoch=voiceEpoch; say(`Question ${pos+1}. ${q.question}. ${q.choices.map((x,i)=>`Choice ${letters[i]}. ${x}.`).join(' ')}.`,()=>{if(epoch===voiceEpoch&&!answered&&current()===q){if(voiceEnabled&&!voiceBlocked){$('status').textContent='Preparing microphone…';setTimeout(()=>{if(epoch===voiceEpoch&&!answered&&current()===q&&voiceEnabled&&!voiceBlocked)startListening()},850)}else $('status').textContent='Tap Answer by voice once to enable hands-free listening.'}},q.id+'_question')}
 function answer(i){
- if(answered||!current())return;haltListening();
+ if(answered||!current())return;
+ // Speech recognition must release the iPhone audio session before MP3 playback.
+ const wasListening=!!recognition||voiceBusy;
+ haltListening();
  answered=true;
  const q=current(),ok=i===q.correct;
  history.push({id:q.id,topic:q.topic,objective:q.objective,category:q.category,correct:ok,selected:i,date:new Date().toISOString()});
@@ -131,7 +134,14 @@ function answer(i){
   ?`You got it! ${selectedReason} Ready for the next one?`
   :`Not quite. ${selectedReason} The correct answer is ${letters[q.correct]}. ${correctReason} Let's keep going.`;
  const thisSession=session;
- say(spoken,()=>{if($('autonext').checked&&thisSession===session&&answered&&current()===q){pos++;present()}},q.id+'_answer'+i);
+ const playFeedback=()=>{
+  if(thisSession!==session||!answered||current()!==q)return;
+  $('status').textContent='Playing answer explanation…';
+  say(spoken,()=>{if($('autonext').checked&&thisSession===session&&answered&&current()===q){pos++;present()}},q.id+'_answer'+i);
+ };
+ // On iOS, playing audio inside SpeechRecognition.onresult races the microphone
+ // shutdown and can leave both playback and auto-next stuck. Give it time to close.
+ if(wasListening)setTimeout(playFeedback,850);else playFeedback();
 }
 function normalize(q){if(!q||typeof q!=='object')throw Error('Invalid question');let choices=q.choices||(q.options&&letters.map(l=>q.options[l]));let correct=Number.isInteger(q.correct)?q.correct:letters.indexOf(q.correct_answer);let explanations=q.explanations||(q.incorrect_explanations&&letters.map((l,i)=>i===correct?q.explanation:q.incorrect_explanations[l]));if(!q.id||!q.question||!Array.isArray(choices)||choices.length!==4||choices.some(c=>typeof c!=='string'||!c.trim())||correct<0||correct>3||!q.topic)throw Error('Invalid question fields');return {id:q.id,question:q.question,choices,correct,explanations:explanations||[q.explanation||'',q.explanation||'',q.explanation||'',q.explanation||''],topic:q.topic,category:q.category||'Other',objective:q.objective||q.topic,source:q.source||'Original',status:q.status||'unreviewed'}}
 $('file').onchange=async e=>{try{let raw=JSON.parse(await e.target.files[0].text());if(!Array.isArray(raw)||!raw.length)throw Error('Expected a nonempty array');let qs=raw.map(normalize),ids=new Set(bank().map(q=>q.id)),added=0;for(let q of qs){if(!ids.has(q.id)){imported.push(q);ids.add(q.id);added++}}save();refresh();$('status').textContent=`Imported ${added} questions. ${qs.length-added} duplicate IDs skipped.`}catch(err){$('status').textContent='Import failed: '+err.message}};
