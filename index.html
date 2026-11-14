@@ -105,7 +105,48 @@ function haltListening(){voiceEpoch++;clearTimeout(voiceRetry);clearTimeout(list
 function stop(){haltListening();cancelNarration()}
 function current(){return exam[pos]}
 function refresh(){let seen=new Set(history.map(x=>x.id));$('count').textContent=`${bank().length} questions available · ${[...seen].filter(id=>bank().some(q=>q.id===id)).length} unique questions attempted`;renderReport();$('availableNum').textContent=bank().length;$('attemptedNum').textContent=[...seen].filter(id=>bank().some(q=>q.id===id)).length}
-function renderReport(){let wrong=history.filter(x=>!x.correct),groups={};for(let x of history){let t=x.objective||x.topic||'Other';groups[t]??={total:0,wrong:0};groups[t].total++;if(!x.correct)groups[t].wrong++}let total=history.length;let el=$('report');el.replaceChildren();let p=document.createElement('p');p.textContent=`${total} attempts · ${total?Math.round(100*(total-wrong.length)/total):0}% correct · ${wrong.length} missed`;el.append(p);let h=document.createElement('h3');h.textContent='Specific concepts to review';el.append(h);let entries=Object.entries(groups).filter(([_,v])=>v.wrong).sort((a,b)=>b[1].wrong-a[1].wrong);if(!entries.length){let x=document.createElement('p');x.textContent='No missed concepts recorded.';el.append(x)}for(let [t,v] of entries){let x=document.createElement('p');x.textContent=`${t}: ${v.wrong} missed of ${v.total} attempts`;el.append(x)}}
+function renderReport(){
+ const wrong=history.filter(x=>!x.correct),total=history.length,el=$('report');
+ el.replaceChildren();
+ const summary=document.createElement('p');
+ summary.textContent=`${total} attempts · ${total?Math.round(100*(total-wrong.length)/total):0}% correct · ${wrong.length} missed`;
+ el.append(summary);
+ const heading=document.createElement('h3');heading.textContent='Specific concepts to review';el.append(heading);
+ if(!wrong.length){const p=document.createElement('p');p.textContent='No missed concepts recorded.';el.append(p);return}
+ const lookup=new Map(bank().map(q=>[q.id,q]));
+ const generic=/^\s*(?:question|item|q)\s*\d+\s*(?:of|\/)\s*\d+\s*$/i;
+ const meaningful=value=>typeof value==='string'&&value.trim()&&!generic.test(value.trim())&&value.trim().toLowerCase()!=='other';
+ const groups=new Map();
+ for(const attempt of history){
+  const q=lookup.get(attempt.id);
+  // The question bank is authoritative: old history may contain session labels instead of clinical objectives.
+  const objective=meaningful(q?.objective)?q.objective:(meaningful(attempt.objective)?attempt.objective:'');
+  const topic=meaningful(q?.topic)?q.topic:(meaningful(attempt.topic)?attempt.topic:'');
+  const answer=q&&Array.isArray(q.choices)?q.choices[q.correct]:'';
+  const key=objective||([topic,answer].filter(Boolean).join(' — '))||attempt.id;
+  if(!groups.has(key))groups.set(key,{objective,topic,answer,q,wrong:0,total:0});
+  const group=groups.get(key);group.total++;if(!attempt.correct)group.wrong++;
+  if(!group.q&&q)group.q=q;
+ }
+ const entries=[...groups.values()].filter(g=>g.wrong).sort((a,b)=>b.wrong-a.wrong||a.objective.localeCompare(b.objective));
+ for(const g of entries){
+  const wrapper=document.createElement('div');wrapper.style.margin='16px 0';
+  const title=document.createElement('p');title.style.fontWeight='700';title.style.marginBottom='4px';
+  title.textContent=g.objective||([g.topic,g.answer].filter(Boolean).join(' — '))||'Previously missed question';wrapper.append(title);
+  if(g.q){
+   const correctReason=g.q.explanations?.[g.q.correct]||g.q.explanation||'';
+   const details=document.createElement('p');details.style.margin='4px 0';
+   details.textContent='Review: '+(correctReason.trim()||`Understand why ${g.answer||'the correct answer'} is correct and how to distinguish it from the other choices.`);
+   wrapper.append(details);
+  }else{
+   const details=document.createElement('p');details.style.margin='4px 0';
+   details.textContent='The original question is not currently in the question bank, so its specific study material cannot be recovered. Re-import that question to see its review topic.';
+   wrapper.append(details);
+  }
+  const count=document.createElement('p');count.className='muted';count.style.fontSize='13px';count.textContent=`${g.wrong} missed of ${g.total} attempts`;
+  wrapper.append(count);el.append(wrapper);
+ }
+}
 function present(){haltListening();let q=current();if(!q){$('status').textContent='Session complete';$('question').textContent='';$('choices').replaceChildren();$('feedback').replaceChildren();$('next').disabled=true;$('listen').disabled=true;$('repeat').disabled=true;renderReport();say('Session complete. Review your results below.');return}answered=false;$('status').textContent='Listen or choose an answer.';$('feedback').replaceChildren();$('next').disabled=true;$('listen').disabled=!SR;$('repeat').disabled=false;$('progress').textContent=`Question ${pos+1} of ${exam.length} · ${q.category} · ${q.topic}`;$('question').textContent=q.question;$('choices').replaceChildren();q.choices.forEach((c,i)=>{let b=document.createElement('button');b.textContent=`${letters[i]}. ${c}`;b.onclick=()=>answer(i);$('choices').append(b)});readQuestion()}
 function readQuestion(){let q=current();if(!q||answered)return;haltListening();$('status').textContent='Reading question aloud…';const epoch=voiceEpoch; say(`Question ${pos+1}. ${q.question}. ${q.choices.map((x,i)=>`Choice ${letters[i]}. ${x}.`).join(' ')}.`,()=>{if(epoch===voiceEpoch&&!answered&&current()===q){if(voiceEnabled&&!voiceBlocked)startListening();else $('status').textContent='Tap Answer by voice once to enable hands-free listening.'}},q.id+'_question')}
 function answer(i){
