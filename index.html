@@ -134,15 +134,18 @@ function renderReport(){
   const byQuestion=new Map();
   for(const item of g.misses){const key=item.attempt.id;if(!byQuestion.has(key))byQuestion.set(key,{...item,n:0});byQuestion.get(key).n++}
   for(const item of byQuestion.values()){
-   const detail=document.createElement('div');detail.style.margin='12px 0 0';detail.style.paddingLeft='12px';detail.style.borderLeft='3px solid var(--border)';
    const q=item.q;
-   const title=document.createElement('p');title.style.fontWeight='650';title.style.margin='4px 0';title.textContent=`Question missed${item.n>1?' ('+item.n+' times)':''}:`;detail.append(title);
-   const question=document.createElement('p');question.style.margin='4px 0';question.style.whiteSpace='pre-wrap';question.textContent=q?q.question:'This question is no longer in the app. Re-import it to display its full wording.';detail.append(question);
+   const detail=document.createElement('details');detail.style.margin='12px 0 0';detail.style.padding='9px 12px';detail.style.border='1px solid var(--border)';detail.style.borderRadius='10px';
+   const toggle=document.createElement('summary');toggle.textContent=`View missed question${item.n>1?' ('+item.n+' missed attempts)':''}`;toggle.style.cursor='pointer';toggle.style.fontWeight='650';toggle.style.padding='3px 0';detail.append(toggle);
+   const content=document.createElement('div');content.style.marginTop='10px';content.style.whiteSpace='normal';
+   const question=document.createElement('p');question.style.margin='4px 0 10px';question.style.whiteSpace='pre-wrap';question.textContent=q?q.question:'This question is no longer in the app. Re-import it to display its full wording.';content.append(question);
    if(q){
-    const choices=document.createElement('p');choices.style.margin='5px 0';choices.style.fontSize='14px';choices.textContent=q.choices.map((c,i)=>`${letters[i]}. ${c}`).join('  |  ');detail.append(choices);
-    const answer=document.createElement('p');answer.style.margin='6px 0';answer.textContent=`Correct answer: ${letters[q.correct]}. ${q.choices[q.correct]}`;detail.append(answer);
+    q.choices.forEach((choice,i)=>{const option=document.createElement('p');option.style.margin='5px 0';option.style.whiteSpace='pre-wrap';option.textContent=`${letters[i]}. ${choice}`;content.append(option)});
+    const selectedValues=[...new Set(g.misses.filter(x=>x.attempt.id===item.attempt.id).map(x=>x.attempt.selected).filter(x=>Number.isInteger(x)&&x>=0&&x<q.choices.length))];
+    const chosen=document.createElement('p');chosen.style.margin='12px 0 5px';chosen.style.fontWeight='650';chosen.textContent=selectedValues.length?`Your incorrect answer${selectedValues.length>1?'s':''}: ${selectedValues.map(i=>`${letters[i]}. ${q.choices[i]}`).join(' / ')}`:'Your selected answer was not recorded for this attempt.';content.append(chosen);
+    const answer=document.createElement('p');answer.style.margin='5px 0';answer.style.fontWeight='650';answer.textContent=`Correct answer: ${letters[q.correct]}. ${q.choices[q.correct]}`;content.append(answer);
    }
-   wrapper.append(detail);
+   detail.append(content);wrapper.append(detail);
   }
   el.append(wrapper);
  }
